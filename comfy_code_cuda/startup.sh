@@ -35,22 +35,22 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip wheel setuptools
 
 # ---------- Detect CUDA + install matching torch ----------
-echo "[info] Detecting CUDA version…"
-CUDA_VERSION="$(nvcc --version 2>/dev/null | grep 'release' | sed -E 's/.*release ([0-9]+\.[0-9]+).*/\1/')"
-if [ -z "${CUDA_VERSION:-}" ]; then
-  CUDA_VERSION="$(cat /usr/local/cuda/version.txt 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+')" || true
-fi
+#echo "[info] Detecting CUDA version…"
+#CUDA_VERSION="$(nvcc --version 2>/dev/null | grep 'release' | sed -E 's/.*release ([0-9]+\.[0-9]+).*/\1/')"
+#if [ -z "${CUDA_VERSION:-}" ]; then
+#  CUDA_VERSION="$(cat /usr/local/cuda/version.txt 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+')" || true
+#fi
+#
+#TORCH_URL=""
+#case "$CUDA_VERSION" in
+#  12.*) TORCH_URL="https://download.pytorch.org/whl/cu121" ;;
+#  11.*) TORCH_URL="https://download.pytorch.org/whl/cu118" ;;
+#  *) TORCH_URL="https://download.pytorch.org/whl/cpu" ;;
+#esac
 
-TORCH_URL=""
-case "$CUDA_VERSION" in
-  12.*) TORCH_URL="https://download.pytorch.org/whl/cu121" ;;
-  11.*) TORCH_URL="https://download.pytorch.org/whl/cu118" ;;
-  *) TORCH_URL="https://download.pytorch.org/whl/cpu" ;;
-esac
-
-echo "[info] Installing torch for CUDA ${CUDA_VERSION:-CPU} from $TORCH_URL"
-pip install torch torchvision torchaudio --index-url "$TORCH_URL" || \
-  echo "[warn] Torch install failed — continuing anyway"
+#echo "[info] Installing torch for CUDA ${CUDA_VERSION:-CPU} from $TORCH_URL"
+#pip install torch torchvision torchaudio --index-url "$TORCH_URL" || \
+#  echo "[warn] Torch install failed — continuing anyway"
 
 # ---------- Install ComfyUI requirements ----------
 echo "[info] Installing ComfyUI dependencies (log: /workspace/pip-install.log)…"
@@ -66,23 +66,23 @@ fi
 pip install -r "$CUSTOM_NODES_DIR/ComfyUI-Manager/requirements.txt" || true
 
 # ---------- VS Code (code-server) ----------
-if ! command -v code-server >/dev/null 2>&1; then
-  echo "[info] Installing code-server…"
-  curl -fsSL https://code-server.dev/install.sh | sh || { echo "[error] code-server install failed"; exit 1; }
-fi
-if [ -z "$CODE_PASS" ]; then
-  CODE_PASS="$(openssl rand -hex 12)"
-  echo "[warn] CODE_SERVER_PASSWORD not set. Temporary password: $CODE_PASS"
-fi
-mkdir -p /root/.config/code-server
-cat >/root/.config/code-server/config.yaml <<EOF
-bind-addr: 0.0.0.0:${CODE_PORT}
-auth: password
-password: ${CODE_PASS}
-cert: false
-EOF
-nohup code-server /workspace --log debug >/workspace/code-server.log 2>&1 &
-sleep 2  # Give code-server time to start
+#if ! command -v code-server >/dev/null 2>&1; then
+#  echo "[info] Installing code-server…"
+#  curl -fsSL https://code-server.dev/install.sh | sh || { echo "[error] code-server install failed"; exit 1; }
+#fi
+#if [ -z "$CODE_PASS" ]; then
+#  CODE_PASS="$(openssl rand -hex 12)"
+#  echo "[warn] CODE_SERVER_PASSWORD not set. Temporary password: $CODE_PASS"
+#fi
+#mkdir -p /root/.config/code-server
+#cat >/root/.config/code-server/config.yaml <<EOF
+#bind-addr: 0.0.0.0:${CODE_PORT}
+#auth: password
+#password: ${CODE_PASS}
+#cert: false
+#EOF
+#nohup code-server /workspace --log debug >/workspace/code-server.log 2>&1 &
+3#sleep 2  # Give code-server time to start
 
 # ---------- Pull workflow profile ----------
 PROFILE_ROOT=/workspace/_profiles
