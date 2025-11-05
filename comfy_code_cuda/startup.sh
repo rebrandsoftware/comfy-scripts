@@ -66,23 +66,23 @@ apt-get clean && rm -rf /var/lib/apt/lists/*
 #pip install -r "$CUSTOM_NODES_DIR/ComfyUI-Manager/requirements.txt" || true
 
 # ---------- VS Code (code-server) ----------
-#if ! command -v code-server >/dev/null 2>&1; then
-#  echo "[info] Installing code-server…"
-#  curl -fsSL https://code-server.dev/install.sh | sh || { echo "[error] code-server install failed"; exit 1; }
-#fi
-#if [ -z "$CODE_PASS" ]; then
-#  CODE_PASS="$(openssl rand -hex 12)"
-#  echo "[warn] CODE_SERVER_PASSWORD not set. Temporary password: $CODE_PASS"
-#fi
-#mkdir -p /root/.config/code-server
-#cat >/root/.config/code-server/config.yaml <<EOF
-#bind-addr: 0.0.0.0:${CODE_PORT}
-#auth: password
-#password: ${CODE_PASS}
-#cert: false
-#EOF
-#nohup code-server /workspace --log debug >/workspace/code-server.log 2>&1 &
-#sleep 2  # Give code-server time to start
+if ! command -v code-server >/dev/null 2>&1; then
+  echo "[info] Installing code-server…"
+  curl -fsSL https://code-server.dev/install.sh | sh || { echo "[error] code-server install failed"; exit 1; }
+fi
+if [ -z "$CODE_PASS" ]; then
+  CODE_PASS="$(openssl rand -hex 12)"
+  echo "[warn] CODE_SERVER_PASSWORD not set. Temporary password: $CODE_PASS"
+fi
+mkdir -p /root/.config/code-server
+cat >/root/.config/code-server/config.yaml <<EOF
+bind-addr: 0.0.0.0:${CODE_PORT}
+auth: password
+password: ${CODE_PASS}
+cert: false
+EOF
+nohup code-server /workspace --log debug >/workspace/code-server.log 2>&1 &
+sleep 2  # Give code-server time to start
 
 # ---------- Pull workflow profile ----------
 PROFILE_ROOT=/workspace/_profiles
