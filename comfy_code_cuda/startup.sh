@@ -22,17 +22,17 @@ apt-get install -y --no-install-recommends \
 apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------- ComfyUI ----------
-if [ ! -d "$COMFY_DIR" ]; then
-  echo "[info] Cloning ComfyUI…"
-  git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git "$COMFY_DIR"
-fi
+#if [ ! -d "$COMFY_DIR" ]; then
+#  echo "[info] Cloning ComfyUI…"
+#  git clone --depth=1 https://github.com/comfyanonymous/ComfyUI.git "$COMFY_DIR"
+#fi
 
 # Python venv
-if [ ! -d "$VENV_DIR" ]; then
-  python3 -m venv "$VENV_DIR"
-fi
-source "$VENV_DIR/bin/activate"
-pip install --upgrade pip wheel setuptools
+#if [ ! -d "$VENV_DIR" ]; then
+#  python3 -m venv "$VENV_DIR"
+#fi
+#source "$VENV_DIR/bin/activate"
+#pip install --upgrade pip wheel setuptools
 
 # ---------- Detect CUDA + install matching torch ----------
 #echo "[info] Detecting CUDA version…"
@@ -53,17 +53,17 @@ pip install --upgrade pip wheel setuptools
 #  echo "[warn] Torch install failed — continuing anyway"
 
 # ---------- Install ComfyUI requirements ----------
-echo "[info] Installing ComfyUI dependencies (log: /workspace/pip-install.log)…"
-pip install -r "$COMFY_DIR/requirements.txt" > /workspace/pip-install.log 2>&1 || \
-  echo "[warn] Some dependencies failed; see /workspace/pip-install.log"
+#echo "[info] Installing ComfyUI dependencies (log: /workspace/pip-install.log)…"
+#pip install -r "$COMFY_DIR/requirements.txt" > /workspace/pip-install.log 2>&1 || \
+#  echo "[warn] Some dependencies failed; see /workspace/pip-install.log"
 
 # ---------- ComfyUI Manager ----------
-mkdir -p "$CUSTOM_NODES_DIR"
-if [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
-  echo "[info] Installing ComfyUI-Manager…"
-  git clone --depth=1 https://github.com/ltdrdata/ComfyUI-Manager "$CUSTOM_NODES_DIR/ComfyUI-Manager"
-fi
-pip install -r "$CUSTOM_NODES_DIR/ComfyUI-Manager/requirements.txt" || true
+#mkdir -p "$CUSTOM_NODES_DIR"
+#if [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
+#  echo "[info] Installing ComfyUI-Manager…"
+#  git clone --depth=1 https://github.com/ltdrdata/ComfyUI-Manager "$CUSTOM_NODES_DIR/ComfyUI-Manager"
+#fi
+#pip install -r "$CUSTOM_NODES_DIR/ComfyUI-Manager/requirements.txt" || true
 
 # ---------- VS Code (code-server) ----------
 #if ! command -v code-server >/dev/null 2>&1; then
@@ -82,7 +82,7 @@ pip install -r "$CUSTOM_NODES_DIR/ComfyUI-Manager/requirements.txt" || true
 #cert: false
 #EOF
 #nohup code-server /workspace --log debug >/workspace/code-server.log 2>&1 &
-3#sleep 2  # Give code-server time to start
+#sleep 2  # Give code-server time to start
 
 # ---------- Pull workflow profile ----------
 PROFILE_ROOT=/workspace/_profiles
