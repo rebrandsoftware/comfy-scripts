@@ -150,6 +150,7 @@ if [ -n "$PROFILE_PATH" ] && [ -d "$PROFILE_PATH" ]; then
     echo "[info] Downloading models from $(basename "$list_file") → $dest_dir"
     aria2c -x"$MODEL_CONCURRENCY" -s"$MODEL_CONCURRENCY" \
            --allow-overwrite=true --continue=true \
+           --content-disposition-default-utf8=true --content-disposition=true \
            --auto-file-renaming=false --max-tries=3 --retry-wait=2 \
            --input-file="$list_file" --dir="$dest_dir" || true
   }
@@ -167,6 +168,60 @@ if [ -n "$PROFILE_PATH" ] && [ -d "$PROFILE_PATH" ]; then
 else
   echo "[info] No profile folder found; you can still upload a workflow in VS Code."
 fi
+
+# ---- Google Drive LORAs ----
+set -Eeuo pipefail
+
+LORA_DIR="/workspace/ComfyUI/models/loras"
+LIST_FILE="models_loras_gdrive.txt"
+
+# install gdown if it's not present
+if ! command -v gdown >/dev/null 2>&1; then
+  python3 -m pip install -q --no-cache-dir gdown
+fi
+
+mkdir -p "$LORA_DIR"
+
+# If the list file doesn't exist or is empty, just skip
+if [[ -s "$LIST_FILE" ]]; then
+  # Each non-empty, non-comment line can be:
+  #   1) a full Drive URL (share link or uc?id=...)
+  #   2) a full Drive URL followed by "out=filename"
+  #   3) a bare FILE_ID (optional) and optional "out=filename"
+  #
+  # Examples in models_loras_gdrive.txt:
+  #   https://drive.google.com/file/d/1WJ4oRBlpJqj_Qn83lLdZxurF--zz0qxO/view?usp=share
+  #   https://drive.google.com/uc?id=1WJ4oRBlpJqj_Qn83lLdZxurF--zz0qxO out=LoRA_umt5_xxl.safetensors
+  #   1WJ4oRBlpJqj_Qn83lLdZxurF--zz0qxO out=my_lora.safetensors
+
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    # skip comments/blank lines
+    [[ -z "${raw//[[:space:]]/}" || "$raw" =~ ^[[:space:]]*# ]] && continue
+
+    url_or_id=$(awk '{print $1}' <<<"$raw")
+    # optional out=filename token anywhere on the line
+    out_name=$(grep -oE 'out=[^[:space:]]+' <<<"$raw" | sed 's/^out=//') || true
+
+    # Decide whether we have an ID or a URL
+    if [[ "$url_or_id" =~ ^[A-Za-z0-9_-]{20,}$ ]]; then
+      # bare FILE_ID
+      if [[ -n "$out_name" ]]; then
+        gdown --retries 3 --timeout 30 --id "$url_or_id" -O "$LORA_DIR/$out_name"
+      else
+        # Put into directory to preserve the Drive filename
+        gdown --retries 3 --timeout 30 --id "$url_or_id" -O "$LORA_DIR/"
+      fi
+    else
+      # URL (share link or uc?id=...), let gdown resolve it
+      if [[ -n "$out_name" ]]; then
+        gdown --fuzzy --retries 3 --timeout 30 "$url_or_id" -O "$LORA_DIR/$out_name"
+      else
+        gdown --fuzzy --retries 3 --timeout 30 "$url_or_id" -O "$LORA_DIR/"
+      fi
+    fi
+  done < "$LIST_FILE"
+fi
+# ---- end Google Drive LORAs ----
 
 # ---------- Health Check / Summary ----------
 PUBLIC_IP="$(curl -s ifconfig.me || echo '0.0.0.0')"
