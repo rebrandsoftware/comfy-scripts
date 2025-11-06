@@ -2,30 +2,39 @@
 set -euo pipefail
 
 # ============================================================================
-# ComfyUI Assets Downloader (models-only startup)
-# - Downloads models/LORAs/VAEs/etc. (no ComfyUI/CUDA/VS Code install)
-# - Supports HTTP(S) and Google Drive (files & folders) via `gdown`
-# - Can source manifests from a Git repo subfolder using:
-#       WORKFLOW_REPO, WORKFLOW_PROFILE, [optional] WORKFLOW_SUBDIR
-# - Safe to run multiple times; resumes partial downloads
+# ComfyUI Assets Downloader (models + workflow only)
+# - Downloads models/LORAs/etc. using manifests in a workflow repo profile
+# - Copies workflow.json into $COMFY_DIR/user/default/workflows/<WORKFLOW_PROFILE>.json
+# - Supports Google Drive via gdown
+# - NO ComfyUI/CUDA/VSCode install; assumes ComfyUI already exists
 # ============================================================================
 
-COMFY_DIR="${COMFY_DIR:-/workspace/runpod-slim/ComfyUI}"
+# --------- CONFIG ---------
+COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
 MODELS_DIR="${MODELS_DIR:-$COMFY_DIR/models}"
-MODEL_CONCURRENCY="${MODEL_CONCURRENCY:-6}"
 RETRY="${RETRY:-3}"
 CONNECT_TIMEOUT="${CONNECT_TIMEOUT:-20}"
 
+# Inputs for manifest download (optional fallbacks)
 MANIFEST_PATH="${MANIFEST_PATH:-}"
 MANIFEST_URL="${MANIFEST_URL:-}"
 CATEGORY="${CATEGORY:-}"
 URLS="${URLS:-}"
 
-# Git workflow repo support
+# Workflow repo/profile (expected to be set in env on RunPod)
 WORKFLOW_REPO="${WORKFLOW_REPO:-}"
 WORKFLOW_PROFILE="${WORKFLOW_PROFILE:-}"
 WORKFLOW_SUBDIR="${WORKFLOW_SUBDIR:-profiles}"
 WORKFLOW_MANIFEST_GLOB="${WORKFLOW_MANIFEST_GLOB:-*.manifest *.txt}"
+
+# Workflow handling
+WORKFLOW_JSON_NAME="${WORKFLOW_JSON_NAME:-workflow.json}"
+WORKFLOW_DEST_DIR="${WORKFLOW_DEST_DIR:-$COMFY_DIR/user/default/workflows}"
+
+# --------- UTIL ---------
+log() { printf "[%s] %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
+err() { printf "[%s] ERROR: %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || return 1; }
 
 category_dir() {
   case "$1" in
@@ -35,30 +44,25 @@ category_dir() {
     upscale) echo "$MODELS_DIR/upscale_models" ;;
     vae) echo "$MODELS_DIR/vae" ;;
     clip) echo "$MODELS_DIR/clip" ;;
+    clip_vision) echo "$MODELS_DIR/clip_vision" ;;
     embeddings) echo "$MODELS_DIR/embeddings" ;;
     unet) echo "$MODELS_DIR/unet" ;;
-    clip_vision) echo "$MODELS_DIR/clip_vision" ;;
     ipadapter) echo "$MODELS_DIR/ipadapter" ;;
     diffusers) echo "$MODELS_DIR/diffusion_models" ;;
     *) echo "$MODELS_DIR/other" ;;
   esac
 }
 
-log() { printf "[%s] %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
-err() { printf "[%s] ERROR: %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
-
-need_cmd() { command -v "$1" >/dev/null 2>&1 || return 1; }
-
 ensure_tooling() {
-  # wget/aria2
-  if ! need_cmd aria2c && ! need_cmd wget; then
+  # wget
+  if ! need_cmd wget; then
     if need_cmd apt-get; then
       apt-get update -y && apt-get install -y --no-install-recommends wget ca-certificates
     elif need_cmd apk; then
       apk add --no-cache wget ca-certificates
     fi
   fi
-  # gdown
+  # gdown for Google Drive
   if ! need_cmd gdown; then
     if need_cmd python3; then
       if ! python3 -m pip --version >/dev/null 2>&1; then
@@ -71,7 +75,7 @@ ensure_tooling() {
       python3 -m pip install --no-cache-dir --upgrade gdown >/dev/null 2>&1 || true
     fi
   fi
-  # git
+  # git (for WORKFLOW_REPO)
   if [[ -n "$WORKFLOW_REPO" ]] && ! need_cmd git; then
     if need_cmd apt-get; then
       apt-get update -y && apt-get install -y --no-install-recommends git
@@ -104,52 +108,79 @@ download_one() {
       err "gdown not installed; cannot fetch Google Drive: $url"
     fi
   else
-    if need_cmd aria2c; then
-      aria2c -x16 -s16 -k1M --retry-wait=5 --max-tries="$RETRY" -d "$dest" "$url"
+    # wget fallback (simple & robust enough for most cases)
+    if [[ -n "$name" ]]; then
+      wget -c --tries="$RETRY" --timeout="$CONNECT_TIMEOUT" -O "$dest/$name" "$url" || err "wget failed: $url"
     else
-      (cd "$dest" && wget -c --tries="$RETRY" --timeout="$CONNECT_TIMEOUT" "$url")
+      ( cd "$dest" && wget -c --tries="$RETRY" --timeout="$CONNECT_TIMEOUT" "$url" ) || err "wget failed: $url"
     fi
   fi
 }
 
+# Parse one manifest line safely in Bash (no awk needed)
+# Accepts: "<category> <url> [filename|--folder]" with arbitrary spaces/tabs
 handle_manifest_line() {
   local line="$1"
-  [[ -z "$line" || "$line" =~ ^# ]] && return 0
+  # Trim
+  line="$(printf "%s" "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  # Skip empty/comment
+  [[ -z "$line" || "${line:0:1}" == "#" ]] && return 0
+
+  # First two fields: category + url; remainder is filename flag (can be empty)
   local category url rest
-  category="$(awk '{print $1}' <<< "$line")"
-  url="$(awk '{print $2}' <<< "$line")"
-  rest="$(awk '{ $1=\"\"; $2=\"\"; sub(/^  */,\"\",$0); print $0 }' <<< "$line")"
+  IFS=' ' read -r category url rest <<<"$line"
+
+  if [[ -z "${category:-}" || -z "${url:-}" ]]; then
+    err "Malformed line: $line"
+    return 1
+  fi
+
   local dest; dest="$(category_dir "$category")"
-  [[ -z "$url" ]] && { err "Malformed line: $line"; return 1; }
-  download_one "$url" "$dest" "$rest"
+  if [[ -n "${rest:-}" ]]; then
+    download_one "$url" "$dest" "$rest"
+  else
+    download_one "$url" "$dest"
+  fi
 }
+
+# --------- WORKFLOW REPO SUPPORT ---------
+PROFILE_DIR=""
+TMPDIR_CLONE=""
+TMP_MANIFEST_FILE=""
 
 fetch_manifests_from_repo() {
   local repo_url="$WORKFLOW_REPO"
   local profile="$WORKFLOW_PROFILE"
   local subdir="$WORKFLOW_SUBDIR"
+
   [[ -z "$repo_url" || -z "$profile" ]] && return 1
   need_cmd git || { err "git not installed"; return 1; }
 
-  local tmpdir; tmpdir="$(mktemp -d)"
+  TMPDIR_CLONE="$(mktemp -d)"
   local clone_url="$repo_url"
   if [[ -n "${GITHUB_TOKEN:-}" && "$repo_url" == https://github.com/* ]]; then
     clone_url="https://${GITHUB_TOKEN}@${repo_url#https://}"
   fi
 
   log "Cloning $repo_url (shallow)…"
-  git clone --depth 1 "$clone_url" "$tmpdir" >/dev/null 2>&1 || {
-    err "Clone failed"; rm -rf "$tmpdir"; return 1;
-  }
+  if ! git clone --depth 1 "$clone_url" "$TMPDIR_CLONE" >/dev/null 2>&1; then
+    err "Clone failed"
+    return 1
+  fi
 
-  local profile_dir="$tmpdir/$subdir/$profile"
-  [[ ! -d "$profile_dir" ]] && { err "Profile dir not found: $subdir/$profile"; rm -rf "$tmpdir"; return 1; }
+  PROFILE_DIR="$TMPDIR_CLONE/$subdir/$profile"
+  if [[ ! -d "$PROFILE_DIR" ]]; then
+    err "Profile dir not found: $subdir/$profile"
+    PROFILE_DIR=""
+    return 1
+  fi
 
-  log "Using workflow profile dir: $subdir/$profile"
-  local tmp_manifest; tmp_manifest="$(mktemp)"
+  # Build a combined manifest from all matching files
+  TMP_MANIFEST_FILE="$(mktemp)"
+  : > "$TMP_MANIFEST_FILE"  # ensure it exists
   shopt -s nullglob
   (
-    cd "$profile_dir"
+    cd "$PROFILE_DIR"
     for pat in $WORKFLOW_MANIFEST_GLOB; do
       for f in $pat; do
         log "Including manifest: $f"
@@ -157,63 +188,89 @@ fetch_manifests_from_repo() {
         echo ""
       done
     done
-  ) > "$tmp_manifest"
+  ) >> "$TMP_MANIFEST_FILE"
   shopt -u nullglob
-  [[ ! -s "$tmp_manifest" ]] && { err "No manifests found"; rm -rf "$tmpdir"; return 1; }
 
-  MANIFEST_PATH="$tmp_manifest"
-  trap 'rm -rf "$tmpdir" "$tmp_manifest" 2>/dev/null || true' EXIT
+  if [[ -s "$TMP_MANIFEST_FILE" ]]; then
+    MANIFEST_PATH="$TMP_MANIFEST_FILE"
+    log "Loaded manifest(s) from $subdir/$profile"
+  else
+    log "No manifest files matched in $subdir/$profile (patterns: $WORKFLOW_MANIFEST_GLOB)"
+  fi
 }
 
+copy_workflow_json_if_present() {
+  [[ -z "$PROFILE_DIR" ]] && return 0
+  local src="$PROFILE_DIR/$WORKFLOW_JSON_NAME"
+  local dest_dir="$WORKFLOW_DEST_DIR"
+  if [[ -f "$src" ]]; then
+    mkdir -p "$dest_dir"
+    local out="$dest_dir/${WORKFLOW_PROFILE}.json"
+    cp "$src" "$out"
+    log "Copied workflow JSON -> $out"
+  else
+    log "No $WORKFLOW_JSON_NAME found in profile; skipping."
+  fi
+}
+
+cleanup() {
+  [[ -n "${TMP_MANIFEST_FILE:-}" && -f "$TMP_MANIFEST_FILE" ]] && rm -f "$TMP_MANIFEST_FILE" || true
+  [[ -n "${TMPDIR_CLONE:-}" && -d "$TMPDIR_CLONE" ]] && rm -rf "$TMPDIR_CLONE" || true
+}
+trap cleanup EXIT
+
 # -------------------- MAIN --------------------
-log "🌐ComfyUI Assets Downloader starting…"
+log "ComfyUI Assets Downloader starting…"
 log "Comfy dir : $COMFY_DIR"
 log "Models dir: $MODELS_DIR"
 
 ensure_tooling
 
+# Load manifests/workflow from repo if configured
 if [[ -n "$WORKFLOW_REPO" && -n "$WORKFLOW_PROFILE" ]]; then
-  fetch_manifests_from_repo || err "Failed to load manifests from repo"
+  fetch_manifests_from_repo || err "Failed to load repo/profile; continuing without it."
 fi
 
-if [[ -n "$MANIFEST_URL" && -z "${WORKFLOW_REPO:-}" ]]; then
-  tmpfile="$(mktemp)"
+# MANIFEST_URL (only if repo didn't already set MANIFEST_PATH)
+if [[ -n "$MANIFEST_URL" && -z "${MANIFEST_PATH:-}" ]]; then
+  local_tmp="$(mktemp)"
   log "Fetching manifest from URL: $MANIFEST_URL"
   if need_cmd curl; then
-    curl -fsSL "$MANIFEST_URL" -o "$tmpfile"
+    curl -fsSL "$MANIFEST_URL" -o "$local_tmp"
   else
-    wget -qO "$tmpfile" "$MANIFEST_URL"
+    wget -qO "$local_tmp" "$MANIFEST_URL"
   fi
-  MANIFEST_PATH="$tmpfile"
+  MANIFEST_PATH="$local_tmp"
 fi
 
+# Quick URL list mode
 if [[ -n "$URLS" ]]; then
-  [[ -z "$CATEGORY" ]] && { err "CATEGORY required with URLS"; exit 1; }
+  [[ -z "${CATEGORY:-}" ]] && { err "CATEGORY required with URLS"; exit 1; }
   dest="$(category_dir "$CATEGORY")"
   IFS=',' read -r -a items <<< "$URLS"
   for u in "${items[@]}"; do
-    download_one "$(echo "$u" | xargs)" "$dest"
+    u="$(echo "$u" | xargs)"; [[ -z "$u" ]] && continue
+    download_one "$u" "$dest"
   done
-  exit 0
+  log "URL list downloads complete."
 fi
 
-if [[ -n "$MANIFEST_PATH" && -f "$MANIFEST_PATH" ]]; then
+# Manifest processing
+if [[ -n "${MANIFEST_PATH:-}" && -f "$MANIFEST_PATH" ]]; then
   log "Using manifest: $MANIFEST_PATH"
+  # Read line-by-line robustly
   while IFS= read -r line || [[ -n "$line" ]]; do
     handle_manifest_line "$line"
   done < "$MANIFEST_PATH"
   log "Manifest downloads complete."
 else
-  cat <<'EON'
-No manifest or URLS specified.
-Provide one of the following:
-  1) WORKFLOW_REPO + WORKFLOW_PROFILE (from environment)
-  2) MANIFEST_URL="https://..." ./startup_models_only.sh
-  3) MANIFEST_PATH="/path/to/file" ./startup_models_only.sh
-  4) URLS="url1,url2" CATEGORY=loras ./startup_models_only.sh
-EON
-  exit 2
+  if [[ -z "$URLS" ]]; then
+    log "No manifest or URL list provided; skipping model downloads."
+  fi
 fi
+
+# Copy workflow.json into Comfy workspace
+copy_workflow_json_if_present
 
 log "All done."
 
