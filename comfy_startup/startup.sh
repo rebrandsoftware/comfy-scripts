@@ -388,11 +388,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   download_to_bucket "$kind" "$url" "$filename_override"
 done < "$MANIFEST_PATH"
 
-# Execute queued parallel downloads
-flush_aria_queue
-
-# Workflows & post
+# ---- Copy workflows FIRST so they’re available right away ----
 copy_workflows "$PROFILE_DIR"
+
+# ---- Start parallel model downloads (non-GDrive) ----
+flush_aria_queue &
+
+# ---- Run post.sh (if any) while downloads continue ----
 run_post_script "$PROFILE_DIR"
+
+# ---- Wait for background downloads to complete before finishing ----
+wait
 
 log "✨🚀 Startup complete! ✅🎨🧠🦙"
