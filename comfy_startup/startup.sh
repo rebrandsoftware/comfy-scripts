@@ -11,10 +11,12 @@ set -euo pipefail
 PROFILES_CLONE_DIR="${PROFILES_CLONE_DIR:-/tmp/comfy-profiles}"
 MANIFEST_NAME="${MANIFEST_NAME:-downloads.manifest}"
 
-# aria2 parallelism
+# aria2 parallelism (tune as desired)
 ARIA_CONN_PER_SERVER="${ARIA_CONN_PER_SERVER:-16}"  # -x
 ARIA_SPLIT="${ARIA_SPLIT:-16}"                      # -s
 ARIA_PARALLEL="${ARIA_PARALLEL:-8}"                 # -j
+# Extra flags for aria2 (e.g., "--console-log-level=warn --summary-interval=0")
+ARIA_EXTRA_FLAGS="${ARIA_EXTRA_FLAGS:-}"
 
 # ====== Prefix → ComfyUI directory map (extend as needed) ======
 declare -A DEST_MAP=(
@@ -44,6 +46,9 @@ declare -A DEST_MAP=(
 
   [style_models]="$COMFY_DIR/models/style_models"
   [image_projects]="$COMFY_DIR/models/image_projects"
+
+  # New: diffusion_models bucket
+  [diffusion_models]="$COMFY_DIR/models/diffusion_models"
 )
 
 # ====== Helpers ======
@@ -62,32 +67,25 @@ auth_repo_url() {
   fi
 }
 
+# ---- robust installer (works with/without sudo, multiple distros)
 install_tools() {
   log "Installing prerequisites (git, curl, python3-pip, gdown, aria2)…"
 
-  # Decide whether to prefix with sudo
-  if command -v sudo >/dev/null 2>&1; then
-    SUDO="sudo"
-  else
-    SUDO=""
-  fi
+  # sudo (if present)
+  local SUDO=""
+  if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
 
-  # Detect package manager
   if command -v apt-get >/dev/null 2>&1; then
     $SUDO apt-get update -y || true
     $SUDO apt-get install -y --no-install-recommends git curl ca-certificates python3-pip aria2 || true
-
   elif command -v dnf >/dev/null 2>&1; then
     $SUDO dnf install -y git curl ca-certificates python3-pip aria2 || true
-
   elif command -v yum >/dev/null 2>&1; then
     $SUDO yum install -y git curl ca-certificates python3-pip aria2 || true
-
   elif command -v apk >/dev/null 2>&1; then
-    # Alpine
     $SUDO apk add --no-cache git curl ca-certificates python3 py3-pip aria2 || true
   else
-    warn "No known package manager found; skipping system install."
+    warn "No known package manager found; skipping system package install."
   fi
 
   # Ensure pip is available
@@ -96,7 +94,7 @@ install_tools() {
     python3 -m ensurepip --upgrade || true
   fi
 
-  # Install gdown if missing (use user mode when not root)
+  # Install gdown (root or user mode)
   if ! command -v gdown >/dev/null 2>&1; then
     if [ "$(id -u)" -eq 0 ]; then
       python3 -m pip install --upgrade --no-cache-dir gdown || true
@@ -106,12 +104,12 @@ install_tools() {
     fi
   fi
 
-  # If aria2c is still missing, it's okay—script will fall back to curl
   if ! command -v aria2c >/dev/null 2>&1; then
-    warn "aria2c not available; downloads will use curl (serial)."
+    warn "aria2c not available; will fall back to curl (serial)."
   fi
 }
 
+# ---- full clone (no sparse/filters; simplest + most compatible)
 git_full_clone() {
   rm -rf "$PROFILES_CLONE_DIR"
   ensure_dir "$PROFILES_CLONE_DIR"
@@ -133,80 +131,77 @@ extract_gdrive_id() {
   printf '%s' "$id"
 }
 
-# Queues for aria2 (non-GDrive) and direct gdown (GDrive)
-ARIA_INPUT_FILE=""   # created lazily
-# --- helpers to determine a filename ---------------------------------
-decode_pct() { python3 - <<'PY'
-import sys, urllib.parse
-print(urllib.parse.unquote(sys.stdin.read().strip()))
+# --- helpers to determine a filename (Python-based, awk-free)
+detect_download_filename() {
+  # Try: (1) final response headers Content-Disposition
+  #      (2) response-content-disposition in final URL
+  #      (3) basename from original URL
+  local url="$1"
+
+  local headers final_url
+  headers="$(curl -sIL "$url")" || headers=""
+  final_url="$(curl -sIL -o /dev/null -w '%{url_effective}' "$url")" || final_url="$url"
+
+  python3 - "$url" "$final_url" <<'PY'
+import sys, re, urllib.parse
+
+orig_url, final_url = sys.argv[1], sys.argv[2]
+headers = sys.stdin.read()
+
+def decode(s):
+    try:
+        return urllib.parse.unquote(s)
+    except Exception:
+        return s
+
+def from_cd(line):
+    # filename*=… (RFC 5987)
+    m = re.search(r'filename\*\s*=\s*([^;]+)', line, flags=re.I)
+    if m:
+        v = m.group(1).strip().strip('"')
+        if "''" in v:
+            _, _, val = v.partition("''")
+            return decode(val)
+        return decode(v.strip('"'))
+    # filename="…"
+    m = re.search(r'filename\s*=\s*"([^"]+)"', line, flags=re.I)
+    if m:
+        return decode(m.group(1))
+    # filename=bare
+    m = re.search(r'filename\s*=\s*([^;]+)', line, flags=re.I)
+    if m:
+        return decode(m.group(1).strip().strip('"'))
+    return None
+
+# 1) parse headers
+for line in headers.splitlines():
+    if line.lower().startswith('content-disposition:'):
+        name = from_cd(line)
+        if name:
+            print(name)
+            sys.exit(0)
+
+# 2) look in final URL query param response-content-disposition
+if 'response-content-disposition=' in final_url:
+    q = urllib.parse.urlsplit(final_url).query
+    params = urllib.parse.parse_qs(q)
+    rcd = params.get('response-content-disposition', [None])[0]
+    if rcd:
+        name = from_cd(urllib.parse.unquote(rcd))
+        if name:
+            print(name)
+            sys.exit(0)
+
+# 3) fallback: basename of the original URL path
+path = urllib.parse.urlsplit(orig_url).path.rstrip('/')
+base = path.split('/')[-1]
+print(decode(base))
 PY
 }
 
-filename_from_headers() {
-  # Reads headers on stdin; prints filename if found
-  awk '
-    BEGIN{IGNORECASE=1; fn=""}
-    /^content-disposition:/{
-      # Try filename*=UTF-8''name first
-      if ($0 ~ /filename\*\s*=\s*[^'\'']*'\''[^'\'']*'\''([^;]+)/) {
-        match($0, /filename\*\s*=\s*[^'\'']*'\''[^'\'']*'\''([^;]+)/, a);
-        print a[1]; exit
-      }
-      # Then filename="name"
-      if ($0 ~ /filename\s*=\s*"([^"]+)"/) {
-        match($0, /filename\s*=\s*"([^"]+)"/, a);
-        print a[1]; exit
-      }
-      # Then filename=name
-      if ($0 ~ /filename\s*=\s*([^;]+)/) {
-        match($0, /filename\s*=\s*([^;]+)/, a);
-        print a[1]; exit
-      }
-    }
-  '
-}
+# ---- aria2 queue file (for parallel non-GDrive downloads)
+ARIA_INPUT_FILE=""   # created lazily
 
-basename_from_url() {
-  # Strip query, take last path segment; URL-decode
-  local u="$1"
-  u="${u%%\?*}"
-  u="${u%/}"
-  printf '%s' "${u##*/}" | decode_pct
-}
-
-detect_download_filename() {
-  # Try to get filename from final headers; else from original URL path.
-  local url="$1"
-  # Get headers after redirects
-  local headers
-  if ! headers="$(curl -sIL "$url")"; then
-    printf '' && return 0
-  fi
-  local cdname
-  cdname="$(printf '%s\n' "$headers" | filename_from_headers)"
-  if [[ -n "$cdname" ]]; then
-    printf '%s' "$(printf '%s' "$cdname" | decode_pct)"
-    return 0
-  fi
-  # Some HF bridges put response-content-disposition in the redirect URL
-  if [[ "$headers" =~ [Rr]esponse-[Cc]ontent-[Dd]isposition ]]; then
-    # Final URL may carry it; try last effective URL
-    local final
-    final="$(curl -sIL -o /dev/null -w '%{url_effective}' "$url")"
-    if [[ "$final" == *"response-content-disposition="* ]]; then
-      local enc="${final#*response-content-disposition=}"
-      enc="${enc%%&*}"
-      enc="$(printf '%s' "$enc" | decode_pct)"
-      # extract filename from that value
-      printf '%s' "$enc" | filename_from_headers
-      if [[ ${PIPESTATUS[1]} -eq 0 ]]; then return 0; fi
-    fi
-  fi
-  # Fallback: take basename from the original (pre-redirect) URL
-  basename_from_url "$url"
-}
-
-# --- updated aria2 queue that pins a nice filename when possible ------
 queue_aria() {
   local url="$1" dest_dir="$2" override="${3:-}"
   ensure_dir "$dest_dir"
@@ -218,8 +213,7 @@ queue_aria() {
   if [[ -n "$override" ]]; then
     outname="$override"
   else
-    # Try to detect a good filename automatically
-    outname="$(detect_download_filename "$url")"
+    outname="$(detect_download_filename "$url" </dev/null || true)"
   fi
 
   {
@@ -245,8 +239,10 @@ download_gdrive() {
   fi
 }
 
+# ---- run aria2 queue (or curl fallback) for non-GDrive items
 flush_aria_queue() {
   [[ -z "${ARIA_INPUT_FILE:-}" ]] && return 0
+
   if command -v aria2c >/dev/null 2>&1; then
     log "Starting parallel downloads via aria2c…"
     aria2c \
@@ -258,23 +254,44 @@ flush_aria_queue() {
       --file-allocation=none \
       --content-disposition-default-utf8=true \
       -x "$ARIA_CONN_PER_SERVER" -s "$ARIA_SPLIT" -j "$ARIA_PARALLEL" \
-      --retry-wait=2 --max-tries=5
+      --retry-wait=2 --max-tries=5 \
+      ${ARIA_EXTRA_FLAGS:-}
   else
     warn "aria2c not found; falling back to curl (serial)."
-    awk '
-      /^[^ ]/ { if (url) { print url "|" dir "|" out; url=""; dir=""; out="" } url=$0; next }
-      /^\ dir=/ { sub(/^ dir=/,""); dir=$0; next }
-      /^\ out=/ { sub(/^ out=/,""); out=$0; next }
-      END { if (url) print url "|" dir "|" out }
-    ' "$ARIA_INPUT_FILE" | while IFS='|' read -r url dir out; do
+    # simple parser: URL line, then " dir=…" and optional " out=…"
+    local url dir out
+    url=""; dir=""; out=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == " "* ]]; then
+        case "$line" in
+          " dir="*) dir="${line# dir=}" ;;
+          " out="*) out="${line# out=}" ;;
+        esac
+      else
+        # if there was a previous URL pending, process it
+        if [[ -n "$url" ]]; then
+          mkdir -p "$dir"
+          if [[ -n "$out" ]]; then
+            curl -L --fail --retry 5 --retry-delay 2 -o "$dir/$out" "$url"
+          else
+            ( cd "$dir" && curl -L --fail --retry 5 --retry-delay 2 -J -O "$url" )
+          fi
+        fi
+        # start a new block
+        url="$line"; dir=""; out=""
+      fi
+    done < "$ARIA_INPUT_FILE"
+    # process last block
+    if [[ -n "$url" ]]; then
       mkdir -p "$dir"
       if [[ -n "$out" ]]; then
         curl -L --fail --retry 5 --retry-delay 2 -o "$dir/$out" "$url"
       else
         ( cd "$dir" && curl -L --fail --retry 5 --retry-delay 2 -J -O "$url" )
       fi
-    done
+    fi
   fi
+
   rm -f "$ARIA_INPUT_FILE"
   ARIA_INPUT_FILE=""
 }
@@ -282,10 +299,13 @@ flush_aria_queue() {
 download_to_bucket() {
   local prefix="$1" url="$2" override="${3:-}"
   local dest="${DEST_MAP[$prefix]:-}"
+
   if [[ -z "$dest" ]]; then
-    warn "Unknown prefix '$prefix'; defaulting to checkpoints."
-    dest="$COMFY_DIR/models/checkpoints"
+    # If not mapped, create a bucket matching the prefix
+    dest="$COMFY_DIR/models/$prefix"
+    warn "Unknown prefix '$prefix'; using $dest"
   fi
+
   if is_google_drive_url "$url"; then
     download_gdrive "$url" "$dest" "$override"
   else
