@@ -64,14 +64,51 @@ auth_repo_url() {
 
 install_tools() {
   log "Installing prerequisites (git, curl, python3-pip, gdown, aria2)…"
-  if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update -y
-    sudo apt-get install -y --no-install-recommends git curl ca-certificates python3-pip aria2
-  elif command -v yum >/dev/null 2>&1; then
-    sudo yum install -y git curl ca-certificates python3-pip aria2 || true
+
+  # Decide whether to prefix with sudo
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  else
+    SUDO=""
   fi
+
+  # Detect package manager
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update -y || true
+    $SUDO apt-get install -y --no-install-recommends git curl ca-certificates python3-pip aria2 || true
+
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y git curl ca-certificates python3-pip aria2 || true
+
+  elif command -v yum >/dev/null 2>&1; then
+    $SUDO yum install -y git curl ca-certificates python3-pip aria2 || true
+
+  elif command -v apk >/dev/null 2>&1; then
+    # Alpine
+    $SUDO apk add --no-cache git curl ca-certificates python3 py3-pip aria2 || true
+  else
+    warn "No known package manager found; skipping system install."
+  fi
+
+  # Ensure pip is available
+  if ! command -v pip3 >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    log "pip3 missing; attempting ensurepip…"
+    python3 -m ensurepip --upgrade || true
+  fi
+
+  # Install gdown if missing (use user mode when not root)
   if ! command -v gdown >/dev/null 2>&1; then
-    python3 -m pip install --upgrade --no-cache-dir gdown
+    if [ "$(id -u)" -eq 0 ]; then
+      python3 -m pip install --upgrade --no-cache-dir gdown || true
+    else
+      python3 -m pip install --user --upgrade --no-cache-dir gdown || true
+      export PATH="$HOME/.local/bin:$PATH"
+    fi
+  fi
+
+  # If aria2c is still missing, it's okay—script will fall back to curl
+  if ! command -v aria2c >/dev/null 2>&1; then
+    warn "aria2c not available; downloads will use curl (serial)."
   fi
 }
 
