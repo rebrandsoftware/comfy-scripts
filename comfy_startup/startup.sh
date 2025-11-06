@@ -135,17 +135,98 @@ extract_gdrive_id() {
 
 # Queues for aria2 (non-GDrive) and direct gdown (GDrive)
 ARIA_INPUT_FILE=""   # created lazily
+# --- helpers to determine a filename ---------------------------------
+decode_pct() { python3 - <<'PY'
+import sys, urllib.parse
+print(urllib.parse.unquote(sys.stdin.read().strip()))
+PY
+}
+
+filename_from_headers() {
+  # Reads headers on stdin; prints filename if found
+  awk '
+    BEGIN{IGNORECASE=1; fn=""}
+    /^content-disposition:/{
+      # Try filename*=UTF-8''name first
+      if ($0 ~ /filename\*\s*=\s*[^'\'']*'\''[^'\'']*'\''([^;]+)/) {
+        match($0, /filename\*\s*=\s*[^'\'']*'\''[^'\'']*'\''([^;]+)/, a);
+        print a[1]; exit
+      }
+      # Then filename="name"
+      if ($0 ~ /filename\s*=\s*"([^"]+)"/) {
+        match($0, /filename\s*=\s*"([^"]+)"/, a);
+        print a[1]; exit
+      }
+      # Then filename=name
+      if ($0 ~ /filename\s*=\s*([^;]+)/) {
+        match($0, /filename\s*=\s*([^;]+)/, a);
+        print a[1]; exit
+      }
+    }
+  '
+}
+
+basename_from_url() {
+  # Strip query, take last path segment; URL-decode
+  local u="$1"
+  u="${u%%\?*}"
+  u="${u%/}"
+  printf '%s' "${u##*/}" | decode_pct
+}
+
+detect_download_filename() {
+  # Try to get filename from final headers; else from original URL path.
+  local url="$1"
+  # Get headers after redirects
+  local headers
+  if ! headers="$(curl -sIL "$url")"; then
+    printf '' && return 0
+  fi
+  local cdname
+  cdname="$(printf '%s\n' "$headers" | filename_from_headers)"
+  if [[ -n "$cdname" ]]; then
+    printf '%s' "$(printf '%s' "$cdname" | decode_pct)"
+    return 0
+  fi
+  # Some HF bridges put response-content-disposition in the redirect URL
+  if [[ "$headers" =~ [Rr]esponse-[Cc]ontent-[Dd]isposition ]]; then
+    # Final URL may carry it; try last effective URL
+    local final
+    final="$(curl -sIL -o /dev/null -w '%{url_effective}' "$url")"
+    if [[ "$final" == *"response-content-disposition="* ]]; then
+      local enc="${final#*response-content-disposition=}"
+      enc="${enc%%&*}"
+      enc="$(printf '%s' "$enc" | decode_pct)"
+      # extract filename from that value
+      printf '%s' "$enc" | filename_from_headers
+      if [[ ${PIPESTATUS[1]} -eq 0 ]]; then return 0; fi
+    fi
+  fi
+  # Fallback: take basename from the original (pre-redirect) URL
+  basename_from_url "$url"
+}
+
+# --- updated aria2 queue that pins a nice filename when possible ------
 queue_aria() {
   local url="$1" dest_dir="$2" override="${3:-}"
   ensure_dir "$dest_dir"
   if [[ -z "$ARIA_INPUT_FILE" ]]; then
     ARIA_INPUT_FILE="$(mktemp)"
   fi
+
+  local outname=""
+  if [[ -n "$override" ]]; then
+    outname="$override"
+  else
+    # Try to detect a good filename automatically
+    outname="$(detect_download_filename "$url")"
+  fi
+
   {
     echo "$url"
     echo " dir=$dest_dir"
-    if [[ -n "$override" ]]; then
-      echo " out=$override"
+    if [[ -n "$outname" ]]; then
+      echo " out=$outname"
     fi
   } >> "$ARIA_INPUT_FILE"
 }
