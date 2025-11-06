@@ -255,6 +255,8 @@ flush_aria_queue() {
       --content-disposition-default-utf8=true \
       -x "$ARIA_CONN_PER_SERVER" -s "$ARIA_SPLIT" -j "$ARIA_PARALLEL" \
       --retry-wait=2 --max-tries=5 \
+      --console-log-level=warn \
+      --summary-interval=0 \
       ${ARIA_EXTRA_FLAGS:-}
   else
     warn "aria2c not found; falling back to curl (serial)."
