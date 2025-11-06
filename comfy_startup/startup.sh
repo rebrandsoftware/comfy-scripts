@@ -317,7 +317,7 @@ download_to_bucket() {
 
 copy_workflows() {
   local src="$1/workflows"
-  local dst="$COMFY_DIR/users/default/workflows"
+  local dst="$COMFY_DIR/user/default/workflows"
   if [[ -d "$src" ]]; then
     ensure_dir "$dst"
     log "Copying workflows: $src → $dst"
