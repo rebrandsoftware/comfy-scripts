@@ -10,7 +10,7 @@ set -euo pipefail
 # - Safe to run multiple times; resumes partial downloads
 # ============================================================================
 
-COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
+COMFY_DIR="${COMFY_DIR:-/workspace/runpod-slim/ComfyUI}"
 MODELS_DIR="${MODELS_DIR:-$COMFY_DIR/models}"
 MODEL_CONCURRENCY="${MODEL_CONCURRENCY:-6}"
 RETRY="${RETRY:-3}"
