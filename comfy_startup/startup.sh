@@ -63,38 +63,25 @@ auth_repo_url() {
 }
 
 install_tools() {
-  log "Installing prerequisites (git, curl, python3-pip, gdown, aria2)..."
+  log "Installing prerequisites (git, curl, python3-pip, gdown, aria2)…"
   if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -y
     sudo apt-get install -y --no-install-recommends git curl ca-certificates python3-pip aria2
   elif command -v yum >/dev/null 2>&1; then
     sudo yum install -y git curl ca-certificates python3-pip aria2 || true
-    # Some distros need EPEL for aria2; if not present, we still fall back to curl later.
   fi
   if ! command -v gdown >/dev/null 2>&1; then
     python3 -m pip install --upgrade --no-cache-dir gdown
   fi
 }
 
-git_sparse_checkout() {
+git_full_clone() {
   rm -rf "$PROFILES_CLONE_DIR"
   ensure_dir "$PROFILES_CLONE_DIR"
 
   local auth_url; auth_url="$(auth_repo_url "$WORKFLOW_REPO")"
-  log "Sparse-cloning $(redact_token "$WORKFLOW_REPO") → $PROFILES_CLONE_DIR (path: $WORKFLOW_PROFILE)"
-
-  git -c advice.detachedHead=false init "$PROFILES_CLONE_DIR"
-  pushd "$PROFILES_CLONE_DIR" >/dev/null
-
-  git remote add origin "$auth_url"
-  git config core.sparseCheckout true
-  # Use cone mode for performance
-  git sparse-checkout init --cone
-  git sparse-checkout set "$WORKFLOW_PROFILE"      # only checkout this folder
-  # Filter blobs for speed
-  git pull --depth=1 --filter=blob:none origin HEAD
-
-  popd >/dev/null
+  log "Cloning full repo $(redact_token "$WORKFLOW_REPO") → $PROFILES_CLONE_DIR"
+  git clone "$auth_url" "$PROFILES_CLONE_DIR" || die "Failed to clone repo"
 }
 
 is_google_drive_url() {
@@ -109,13 +96,9 @@ extract_gdrive_id() {
   printf '%s' "$id"
 }
 
-# Queues for aria2 (non-GDrive) and gdown (GDrive)
+# Queues for aria2 (non-GDrive) and direct gdown (GDrive)
 ARIA_INPUT_FILE=""   # created lazily
 queue_aria() {
-  # per-item options using aria2c input file format:
-  # URL
-  #  dir=/path
-  #  out=filename   (optional)
   local url="$1" dest_dir="$2" override="${3:-}"
   ensure_dir "$dest_dir"
   if [[ -z "$ARIA_INPUT_FILE" ]]; then
@@ -160,7 +143,6 @@ flush_aria_queue() {
       --retry-wait=2 --max-tries=5
   else
     warn "aria2c not found; falling back to curl (serial)."
-    # Fallback: parse the input file and do simple curl -L -J -O (or -o override)
     awk '
       /^[^ ]/ { if (url) { print url "|" dir "|" out; url=""; dir=""; out="" } url=$0; next }
       /^\ dir=/ { sub(/^ dir=/,""); dir=$0; next }
@@ -228,7 +210,7 @@ log "WORKFLOW_PROFILE: $WORKFLOW_PROFILE"
 install_tools
 ensure_dir "$COMFY_DIR"
 
-git_sparse_checkout
+git_full_clone
 
 PROFILE_DIR="$PROFILES_CLONE_DIR/$WORKFLOW_PROFILE"
 [[ -d "$PROFILE_DIR" ]] || die "Profile folder not found: $PROFILE_DIR"
@@ -258,7 +240,6 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     tail="${line#"$kind"}"; tail="${tail# }"
     tail="${tail#"$url"}";  tail="${tail# }"
     filename_override="$tail"
-    # strip wrapping quotes if present
     filename_override="${filename_override%\"}"; filename_override="${filename_override#\"}"
     filename_override="${filename_override%\'}"; filename_override="${filename_override#\'}"
   fi
