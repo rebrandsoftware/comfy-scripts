@@ -14,7 +14,7 @@ MANIFEST_NAME="${MANIFEST_NAME:-downloads.manifest}"
 # aria2 parallelism (tune as desired)
 ARIA_CONN_PER_SERVER="${ARIA_CONN_PER_SERVER:-16}"  # -x
 ARIA_SPLIT="${ARIA_SPLIT:-16}"                      # -s
-ARIA_PARALLEL="${ARIA_PARALLEL:-8}"                 # -j
+ARIA_PARALLEL="${ARIA_PARALLEL:-2}"                 # -j
 # Extra flags for aria2 (e.g., "--console-log-level=warn --summary-interval=0")
 ARIA_EXTRA_FLAGS="${ARIA_EXTRA_FLAGS:-}"
 
@@ -46,6 +46,8 @@ declare -A DEST_MAP=(
 
   [style_models]="$COMFY_DIR/models/style_models"
   [image_projects]="$COMFY_DIR/models/image_projects"
+
+  [csv]="$COMFY_DIR/custom_nodes/comfyui-ez-af-nodes/DATA/CSV"
 
   # New: diffusion_models bucket
   [diffusion_models]="$COMFY_DIR/models/diffusion_models"
@@ -399,5 +401,7 @@ run_post_script "$PROFILE_DIR"
 
 # ---- Wait for background downloads to complete before finishing ----
 wait
+
+filebrowser users update admin --password MayhemGIK3152
 
 log "✨🚀 Startup complete! ✅🎨🧠🦙"
