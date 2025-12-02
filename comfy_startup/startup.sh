@@ -47,7 +47,7 @@ declare -A DEST_MAP=(
   [style_models]="$COMFY_DIR/models/style_models"
   [image_projects]="$COMFY_DIR/models/image_projects"
 
-  [csv]="$COMFY_DIR/custom_nodes/comfyui-ez-af-nodes/DATA/CSV"
+  [csv]="$COMFY_DIR/custom_nodes/csv"
 
   # New: diffusion_models bucket
   [diffusion_models]="$COMFY_DIR/models/diffusion_models"
