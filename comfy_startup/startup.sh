@@ -402,6 +402,4 @@ run_post_script "$PROFILE_DIR"
 # ---- Wait for background downloads to complete before finishing ----
 wait
 
-filebrowser users update admin --password MayhemGIK3152
-
 log "✨🚀 Startup complete! ✅🎨🧠🦙"
