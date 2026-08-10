@@ -234,10 +234,10 @@ download_gdrive() {
   [[ -n "$id" ]] || die "Could not extract Google Drive id from: $url"
   if [[ -n "$override" ]]; then
     log "gdown → $dest_dir/$override"
-    gdown --fuzzy "https://drive.google.com/uc?id=$id" -O "$dest_dir/$override"
+    gdown "$id" -O "$dest_dir/$override"
   else
     log "gdown → $dest_dir (Drive filename)"
-    gdown --fuzzy "https://drive.google.com/uc?id=$id" -O "$dest_dir/"
+    gdown "$id" -O "$dest_dir/"
   fi
 }
 
